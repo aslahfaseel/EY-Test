@@ -1,0 +1,182 @@
+pipeline {
+    agent any
+    
+    parameters {
+        choice(name: 'DEPLOYMENT_TYPE', choices: ['blue-to-green', 'green-to-blue'], description: 'Select deployment direction')
+        string(name: 'REPLICAS', defaultValue: '3', description: 'Number of replicas for new deployment')
+    }
+    
+    environment {
+        NAMESPACE = 'default'
+        APP_NAME = 'demo-app'
+    }
+    
+    stages {
+        stage('Validate Current State') {
+            steps {
+                script {
+                    echo "Validating current deployment state..."
+                    sh """
+                        kubectl get deployment demo-app-blue -n ${NAMESPACE}
+                        kubectl get deployment demo-app-green -n ${NAMESPACE}
+                        kubectl get service demo-app-service -n ${NAMESPACE}
+                    """
+                }
+            }
+        }
+        
+        stage('Determine Active and Target') {
+            steps {
+                script {
+                    if (params.DEPLOYMENT_TYPE == 'blue-to-green') {
+                        env.ACTIVE_DEPLOYMENT = 'demo-app-blue'
+                        env.TARGET_DEPLOYMENT = 'demo-app-green'
+                        env.ACTIVE_VERSION = 'blue'
+                        env.TARGET_VERSION = 'green'
+                    } else {
+                        env.ACTIVE_DEPLOYMENT = 'demo-app-green'
+                        env.TARGET_DEPLOYMENT = 'demo-app-blue'
+                        env.ACTIVE_VERSION = 'green'
+                        env.TARGET_VERSION = 'blue'
+                    }
+                    echo "Active Deployment: ${env.ACTIVE_DEPLOYMENT}"
+                    echo "Target Deployment: ${env.TARGET_DEPLOYMENT}"
+                }
+            }
+        }
+        
+        stage('Scale Up Target Deployment') {
+            steps {
+                script {
+                    echo "Scaling up ${env.TARGET_DEPLOYMENT} to ${params.REPLICAS} replicas..."
+                    sh """
+                        kubectl scale deployment ${env.TARGET_DEPLOYMENT} --replicas=${params.REPLICAS} -n ${NAMESPACE}
+                    """
+                }
+            }
+        }
+        
+        stage('Wait for Target Deployment Ready') {
+            steps {
+                script {
+                    echo "Waiting for ${env.TARGET_DEPLOYMENT} to be ready..."
+                    sh """
+                        kubectl rollout status deployment/${env.TARGET_DEPLOYMENT} -n ${NAMESPACE} --timeout=5m
+                    """
+                }
+            }
+        }
+        
+        stage('Run Health Checks') {
+            steps {
+                script {
+                    echo "Running health checks on ${env.TARGET_DEPLOYMENT}..."
+                    sh """
+                        # Get pod count
+                        READY_PODS=\$(kubectl get deployment ${env.TARGET_DEPLOYMENT} -n ${NAMESPACE} -o jsonpath='{.status.readyReplicas}')
+                        echo "Ready Pods: \$READY_PODS"
+                        
+                        if [ "\$READY_PODS" != "${params.REPLICAS}" ]; then
+                            echo "ERROR: Not all pods are ready!"
+                            exit 1
+                        fi
+                        
+                        # Test pod endpoints
+                        kubectl get pods -n ${NAMESPACE} -l app=${APP_NAME},version=${env.TARGET_VERSION} -o name | while read pod; do
+                            echo "Testing \$pod..."
+                            kubectl exec \$pod -n ${NAMESPACE} -- wget -O- -q http://localhost:80 > /dev/null
+                            if [ \$? -eq 0 ]; then
+                                echo "\$pod is healthy"
+                            else
+                                echo "ERROR: \$pod health check failed!"
+                                exit 1
+                            fi
+                        done
+                    """
+                }
+            }
+        }
+        
+        stage('Switch Traffic to Target') {
+            steps {
+                script {
+                    echo "Switching service traffic to ${env.TARGET_VERSION}..."
+                    sh """
+                        kubectl patch service demo-app-service -n ${NAMESPACE} -p '{"spec":{"selector":{"version":"${env.TARGET_VERSION}"}}}'
+                    """
+                    echo "Traffic switched to ${env.TARGET_VERSION}!"
+                }
+            }
+        }
+        
+        stage('Verification Period') {
+            steps {
+                script {
+                    echo "Monitoring new deployment for 30 seconds..."
+                    sleep(time: 30, unit: 'SECONDS')
+                    
+                    sh """
+                        # Check if pods are still healthy
+                        READY_PODS=\$(kubectl get deployment ${env.TARGET_DEPLOYMENT} -n ${NAMESPACE} -o jsonpath='{.status.readyReplicas}')
+                        if [ "\$READY_PODS" != "${params.REPLICAS}" ]; then
+                            echo "ERROR: Deployment became unhealthy during verification!"
+                            exit 1
+                        fi
+                    """
+                }
+            }
+        }
+        
+        stage('Scale Down Old Deployment') {
+            steps {
+                script {
+                    echo "Scaling down ${env.ACTIVE_DEPLOYMENT}..."
+                    sh """
+                        kubectl scale deployment ${env.ACTIVE_DEPLOYMENT} --replicas=0 -n ${NAMESPACE}
+                    """
+                }
+            }
+        }
+        
+        stage('Deployment Complete') {
+            steps {
+                script {
+                    echo "==================================="
+                    echo "Blue-Green Deployment Complete!"
+                    echo "Active Version: ${env.TARGET_VERSION}"
+                    echo "==================================="
+                    
+                    sh """
+                        echo "Current Service Configuration:"
+                        kubectl get service demo-app-service -n ${NAMESPACE} -o yaml | grep -A 5 selector
+                        
+                        echo ""
+                        echo "Deployment Status:"
+                        kubectl get deployments -n ${NAMESPACE} -l app=${APP_NAME}
+                    """
+                }
+            }
+        }
+    }
+    
+    post {
+        failure {
+            script {
+                echo "Deployment failed! Rolling back..."
+                sh """
+                    # Rollback: switch service back to active deployment
+                    kubectl patch service demo-app-service -n ${NAMESPACE} -p '{"spec":{"selector":{"version":"${env.ACTIVE_VERSION}"}}}'
+                    
+                    # Scale down target deployment
+                    kubectl scale deployment ${env.TARGET_DEPLOYMENT} --replicas=0 -n ${NAMESPACE}
+                    
+                    echo "Rollback completed. Service pointing back to ${env.ACTIVE_VERSION}"
+                """
+            }
+        }
+        success {
+            echo "Blue-Green deployment completed successfully!"
+        }
+    }
+}
+

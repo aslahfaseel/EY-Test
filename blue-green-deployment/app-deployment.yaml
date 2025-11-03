@@ -1,0 +1,176 @@
+# Blue Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-app-blue
+  namespace: default
+  labels:
+    app: demo-app
+    version: blue
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: demo-app
+      version: blue
+  template:
+    metadata:
+      labels:
+        app: demo-app
+        version: blue
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.25-alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: html
+          mountPath: /usr/share/nginx/html
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+      initContainers:
+      - name: install
+        image: busybox:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          cat > /work-dir/index.html <<EOF
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>Blue Version</title>
+              <style>
+                  body {
+                      background-color: #1E90FF;
+                      color: white;
+                      font-family: Arial, sans-serif;
+                      display: flex;
+                      justify-content: center;
+                      align-items: center;
+                      height: 100vh;
+                      margin: 0;
+                  }
+                  .container {
+                      text-align: center;
+                  }
+                  h1 {
+                      font-size: 4em;
+                      margin: 0;
+                  }
+                  p {
+                      font-size: 1.5em;
+                  }
+              </style>
+          </head>
+          <body>
+              <div class="container">
+                  <h1>🔵 BLUE VERSION</h1>
+                  <p>Application Version: 1.0</p>
+                  <p>Deployment: Blue</p>
+                  <p>Hostname: $(hostname)</p>
+              </div>
+          </body>
+          </html>
+          EOF
+        volumeMounts:
+        - name: html
+          mountPath: /work-dir
+      volumes:
+      - name: html
+        emptyDir: {}
+---
+# Green Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-app-green
+  namespace: default
+  labels:
+    app: demo-app
+    version: green
+spec:
+  replicas: 0  # Initially set to 0, will be scaled up during blue-green deployment
+  selector:
+    matchLabels:
+      app: demo-app
+      version: green
+  template:
+    metadata:
+      labels:
+        app: demo-app
+        version: green
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.25-alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: html
+          mountPath: /usr/share/nginx/html
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+      initContainers:
+      - name: install
+        image: busybox:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          cat > /work-dir/index.html <<EOF
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>Green Version</title>
+              <style>
+                  body {
+                      background-color: #32CD32;
+                      color: white;
+                      font-family: Arial, sans-serif;
+                      display: flex;
+                      justify-content: center;
+                      align-items: center;
+                      height: 100vh;
+                      margin: 0;
+                  }
+                  .container {
+                      text-align: center;
+                  }
+                  h1 {
+                      font-size: 4em;
+                      margin: 0;
+                  }
+                  p {
+                      font-size: 1.5em;
+                  }
+              </style>
+          </head>
+          <body>
+              <div class="container">
+                  <h1>🟢 GREEN VERSION</h1>
+                  <p>Application Version: 2.0</p>
+                  <p>Deployment: Green</p>
+                  <p>Hostname: $(hostname)</p>
+              </div>
+          </body>
+          </html>
+          EOF
+        volumeMounts:
+        - name: html
+          mountPath: /work-dir
+      volumes:
+      - name: html
+        emptyDir: {}
+

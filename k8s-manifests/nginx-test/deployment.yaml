@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aggressive-load
+  namespace: default
+spec:
+  replicas: 20
+  selector:
+    matchLabels:
+      app: aggressive-load
+  template:
+    metadata:
+      labels:
+        app: aggressive-load
+    spec:
+      containers:
+      - name: load
+        image: busybox
+        command: ["/bin/sh"]
+        args:
+          - -c
+          - |
+            echo "Starting aggressive load..."
+            while true; do
+              # Launch 500 concurrent requests
+              for i in $(seq 1 500); do
+                wget -q -O- http://nginx-test.default.svc.cluster.local &
+              done
+              sleep 0.1
+            done
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 100m
+            memory: 128Mi
