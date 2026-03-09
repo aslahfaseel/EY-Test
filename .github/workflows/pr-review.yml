@@ -1,0 +1,114 @@
+name: Gemini PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch base branch
+        run: git fetch origin ${{ github.base_ref }}
+
+      - name: Collect changed files
+        id: changes
+        run: |
+          files=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+
+          if [ -z "$files" ]; then
+            files="No files changed"
+          fi
+
+          delimiter=$(openssl rand -hex 16)
+          printf "files<<%s\n%s\n%s\n" "$delimiter" "$files" "$delimiter" >> $GITHUB_OUTPUT
+
+      - name: Collect file contents
+        id: content
+        run: |
+          review_content=""
+
+          for file in $(git diff --name-only origin/${{ github.base_ref }}...HEAD); do
+            if [ -f "$file" ]; then
+              review_content="$review_content\n\nFILE: $file\n"
+              review_content="$review_content\n$(sed -n '1,200p' "$file")"
+            fi
+          done
+
+          delimiter=$(openssl rand -hex 16)
+          printf "content<<%s\n%s\n%s\n" "$delimiter" "$review_content" "$delimiter" >> $GITHUB_OUTPUT
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Gemini CLI
+        run: |
+          npm install -g @google/gemini-cli
+          gemini --version
+
+      - name: Configure Gemini Auth
+        run: |
+          mkdir -p ~/.gemini
+          echo '{"selectedAuthType":"gemini-api-key"}' > ~/.gemini/settings.json
+
+      - name: Run Gemini Review
+        id: review
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          FILE_CONTENT: ${{ steps.content.outputs.content }}
+        run: |
+          echo "Preparing prompt..."
+
+          echo "You are a senior software engineer reviewing a pull request." > prompt.txt
+          echo "" >> prompt.txt
+          echo "Analyze the following code changes and identify:" >> prompt.txt
+          echo "- Bugs or logic errors" >> prompt.txt
+          echo "- Security vulnerabilities" >> prompt.txt
+          echo "- Performance problems" >> prompt.txt
+          echo "- Code quality issues" >> prompt.txt
+          echo "- Missing validations" >> prompt.txt
+          echo "- Best practice violations" >> prompt.txt
+          echo "" >> prompt.txt
+          echo "Provide clear actionable suggestions." >> prompt.txt
+          echo "" >> prompt.txt
+          echo "Code changes:" >> prompt.txt
+
+          echo "$FILE_CONTENT" >> prompt.txt
+
+          prompt=$(cat prompt.txt)
+
+          echo "Running Gemini..."
+
+          gemini -m gemini-2.0-flash -p "$prompt" > review_output.txt
+
+          if [ ! -s review_output.txt ]; then
+            echo "Gemini produced no output"
+            exit 1
+          fi
+
+          delimiter=$(openssl rand -hex 16)
+          printf "review<<%s\n%s\n%s\n" "$delimiter" "$(cat review_output.txt)" "$delimiter" >> $GITHUB_OUTPUT
+
+      - name: Post PR comment
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REVIEW: ${{ steps.review.outputs.review }}
+        run: |
+          echo "Posting PR comment..."
+
+          printf "### 🤖 Gemini AI Code Review\n\n%s\n\n---\nGenerated automatically\n" "$REVIEW" > review.md
+
+          gh pr comment $PR_NUMBER --body-file review.md
