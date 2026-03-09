@@ -91,7 +91,7 @@ jobs:
 
           echo "Running Gemini..."
 
-          gemini -m gemini-1.5-flash -p "$prompt" > review_output.txt
+          gemini -m gemini-2.0-flash -p "$prompt" > review_output.txt
 
           if [ ! -s review_output.txt ]; then
             echo "Gemini produced no output"
