@@ -21,13 +21,12 @@ jobs:
       - name: Fetch base branch
         run: git fetch origin ${{ github.base_ref }}
 
-      - name: Get changed files
-        id: files
+      - name: Collect changed files
+        id: changes
         run: |
           files=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
 
           if [ -z "$files" ]; then
-            echo "No files changed"
             files="No files changed"
           fi
 
@@ -41,9 +40,8 @@ jobs:
 
           for file in $(git diff --name-only origin/${{ github.base_ref }}...HEAD); do
             if [ -f "$file" ]; then
-              echo "Adding $file"
               review_content="$review_content\n\nFILE: $file\n"
-              review_content="$review_content\n$(sed -n '1,200p' $file)"
+              review_content="$review_content\n$(sed -n '1,200p' "$file")"
             fi
           done
 
@@ -73,10 +71,19 @@ jobs:
         run: |
           echo "Preparing prompt..."
 
-          printf "You are a senior software engineer reviewing a pull request.\n\n" > prompt.txt
-          printf "Review the following code changes and identify:\n" >> prompt.txt
-          printf "- Bugs\n- Security issues\n- Performance issues\n- Code quality problems\n\n" >> prompt.txt
-          printf "Provide clear suggestions.\n\n" >> prompt.txt
+          echo "You are a senior software engineer reviewing a pull request." > prompt.txt
+          echo "" >> prompt.txt
+          echo "Analyze the following code changes and identify:" >> prompt.txt
+          echo "- Bugs or logic errors" >> prompt.txt
+          echo "- Security vulnerabilities" >> prompt.txt
+          echo "- Performance problems" >> prompt.txt
+          echo "- Code quality issues" >> prompt.txt
+          echo "- Missing validations" >> prompt.txt
+          echo "- Best practice violations" >> prompt.txt
+          echo "" >> prompt.txt
+          echo "Provide clear actionable suggestions." >> prompt.txt
+          echo "" >> prompt.txt
+          echo "Code changes:" >> prompt.txt
 
           echo "$FILE_CONTENT" >> prompt.txt
 
@@ -86,15 +93,22 @@ jobs:
 
           gemini -m gemini-1.5-flash -p "$prompt" > review_output.txt
 
+          if [ ! -s review_output.txt ]; then
+            echo "Gemini produced no output"
+            exit 1
+          fi
+
           delimiter=$(openssl rand -hex 16)
           printf "review<<%s\n%s\n%s\n" "$delimiter" "$(cat review_output.txt)" "$delimiter" >> $GITHUB_OUTPUT
 
       - name: Post PR comment
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          REVIEW: ${{ steps.review.outputs.review }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          REVIEW: ${{ steps.review.outputs.review }}
         run: |
+          echo "Posting PR comment..."
+
           printf "### 🤖 Gemini AI Code Review\n\n%s\n\n---\nGenerated automatically\n" "$REVIEW" > review.md
 
           gh pr comment $PR_NUMBER --body-file review.md
