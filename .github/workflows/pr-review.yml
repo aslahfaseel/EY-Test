@@ -30,14 +30,6 @@ jobs:
             diff_content="No code changes detected in this pull request."
           fi
 
-          diff_size=${#diff_content}
-          echo "Diff size: $diff_size characters"
-
-          if [ $diff_size -gt 500000 ]; then
-            echo "Large PR detected. Truncating diff."
-            diff_content=$(echo "$diff_content" | head -c 500000)
-          fi
-
           delimiter=$(openssl rand -hex 16)
           printf "diff<<%s\n%s\n%s\n" "$delimiter" "$diff_content" "$delimiter" >> $GITHUB_OUTPUT
 
@@ -51,40 +43,25 @@ jobs:
           npm install -g @google/gemini-cli
           gemini --version
 
+      - name: Configure Gemini Auth
+        run: |
+          mkdir -p ~/.gemini
+          echo '{"selectedAuthType":"gemini-api-key"}' > ~/.gemini/settings.json
+
       - name: Run Gemini Review
         id: gemini_review
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           PR_DIFF: ${{ steps.pr_diff.outputs.diff }}
         run: |
-          echo "Creating review prompt..."
+          printf "You are a senior engineer reviewing a PR.\n\nCode changes:\n\n" > prompt.txt
+          echo "$PR_DIFF" >> prompt.txt
 
-          printf "You are a senior software engineer reviewing a pull request.\n\n" > review_prompt.txt
-          printf "Review the following code changes and identify:\n" >> review_prompt.txt
-          printf "1. Bugs or logic errors\n" >> review_prompt.txt
-          printf "2. Security vulnerabilities\n" >> review_prompt.txt
-          printf "3. Performance problems\n" >> review_prompt.txt
-          printf "4. Code quality and maintainability issues\n" >> review_prompt.txt
-          printf "5. Missing validation or edge cases\n" >> review_prompt.txt
-          printf "6. Best practice violations\n\n" >> review_prompt.txt
-          printf "Provide clear actionable suggestions.\n\n" >> review_prompt.txt
-          printf "Code changes:\n\n" >> review_prompt.txt
-
-          echo "$PR_DIFF" >> review_prompt.txt
-
-          echo "Running Gemini review..."
-
-          prompt=$(cat review_prompt.txt)
+          prompt=$(cat prompt.txt)
 
           gemini -p "$prompt" > review_output.txt
 
-          if [ ! -s review_output.txt ]; then
-            echo "Gemini produced no output"
-            exit 1
-          fi
-
           delimiter=$(openssl rand -hex 16)
-
           printf "review<<%s\n%s\n%s\n" "$delimiter" "$(cat review_output.txt)" "$delimiter" >> $GITHUB_OUTPUT
 
       - name: Post Review Comment
@@ -93,8 +70,5 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REVIEW_OUTPUT: ${{ steps.gemini_review.outputs.review }}
         run: |
-          echo "Posting PR comment..."
-
-          printf "### 🤖 Gemini AI Code Review\n\n%s\n\n---\nGenerated automatically using Gemini CLI\n" "$REVIEW_OUTPUT" > review_comment.md
-
+          printf "### 🤖 Gemini AI Code Review\n\n%s\n" "$REVIEW_OUTPUT" > review_comment.md
           gh pr comment $PR_NUMBER --body-file review_comment.md
