@@ -19,8 +19,7 @@ jobs:
           fetch-depth: 0
 
       - name: Fetch base branch
-        run: |
-          git fetch origin ${{ github.base_ref }}
+        run: git fetch origin ${{ github.base_ref }}
 
       - name: Get PR Diff
         id: pr_diff
@@ -39,9 +38,8 @@ jobs:
             diff_content=$(echo "$diff_content" | head -c 500000)
           fi
 
-          DELIMITER=$(openssl rand -hex 16)
-
-          printf "diff<<%s\n%s\n%s\n" "$DELIMITER" "$diff_content" "$DELIMITER" >> $GITHUB_OUTPUT
+          delimiter=$(openssl rand -hex 16)
+          printf "diff<<%s\n%s\n%s\n" "$delimiter" "$diff_content" "$delimiter" >> $GITHUB_OUTPUT
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -53,10 +51,6 @@ jobs:
           npm install -g @google/gemini-cli
           gemini --version
 
-      - name: Install GitHub CLI
-        run: |
-          gh --version
-
       - name: Run Gemini Review
         id: gemini_review
         env:
@@ -65,13 +59,30 @@ jobs:
         run: |
           echo "Creating review prompt..."
 
-          cat <<EOF > review_prompt.txt
+          printf "You are a senior software engineer reviewing a pull request.\n\n" > review_prompt.txt
+          printf "Review the following code changes and identify:\n" >> review_prompt.txt
+          printf "1. Bugs or logic errors\n" >> review_prompt.txt
+          printf "2. Security vulnerabilities\n" >> review_prompt.txt
+          printf "3. Performance problems\n" >> review_prompt.txt
+          printf "4. Code quality and maintainability issues\n" >> review_prompt.txt
+          printf "5. Missing validation or edge cases\n" >> review_prompt.txt
+          printf "6. Best practice violations\n\n" >> review_prompt.txt
+          printf "Provide clear actionable suggestions.\n\n" >> review_prompt.txt
+          printf "Code changes:\n\n" >> review_prompt.txt
 
+          echo "$PR_DIFF" >> review_prompt.txt
 
-               Review the following code changes and identify:
+          echo "Running Gemini review..."
 
-               1. Bugs or logic errors
-                ELIMITER" "$(cat review_output.txt)" "$DELIMITER" >> $GITHUB_OUTPUT
+          gemini -p < review_prompt.txt > review_output.txt
+
+          if [ ! -s review_output.txt ]; then
+            echo "Gemini produced no output"
+            exit 1
+          fi
+
+          delimiter=$(openssl rand -hex 16)
+          printf "review<<%s\n%s\n%s\n" "$delimiter" "$(cat review_output.txt)" "$delimiter" >> $GITHUB_OUTPUT
 
       - name: Post Review Comment
         env:
@@ -81,8 +92,6 @@ jobs:
         run: |
           echo "Posting PR comment..."
 
-          cat <<EOF > review_comment.md
-### 🤖 Gemini AI Code Review
+          printf "### 🤖 Gemini AI Code Review\n\n%s\n\n---\nGenerated automatically using Gemini CLI\n" "$REVIEW_OUTPUT" > review_comment.md
 
-
-                                      
+          gh pr comment $PR_NUMBER --body-file review_comment.md
